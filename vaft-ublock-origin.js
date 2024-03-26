@@ -4,6 +4,7 @@
 twitch-videoad.js text/javascript
 (function() {
     if ( /(^|\.)twitch\.tv$/.test(document.location.hostname) === false ) { return; }
+    //This stops Twitch from pausing the player when in another tab and an ad shows.
     try {
         Object.defineProperty(document, 'visibilityState', {
             get() {
@@ -24,6 +25,7 @@ twitch-videoad.js text/javascript
             e.preventDefault();
             e.stopPropagation();
             e.stopImmediatePropagation();
+            //This corrects the background tab buffer bug when switching to the background tab for the first time after an extended period.
             doTwitchPlayerTask(false, false, true, false, false);
         };
         document.addEventListener('visibilitychange', block, true);
@@ -142,7 +144,7 @@ twitch-videoad.js text/javascript
                     if (adBlockDiv == null) {
                         adBlockDiv = getAdBlockDiv();
                     }
-                    adBlockDiv.P.textContent = 'Akashy est entrain de bloquer les publicités';
+                    adBlockDiv.P.textContent = 'Blocking ads';
                     adBlockDiv.style.display = 'block';
                 } else if (e.data.key == 'HideAdBlockBanner') {
                     if (adBlockDiv == null) {
@@ -269,7 +271,7 @@ twitch-videoad.js text/javascript
         return req.responseText.split("'")[1];
     }
     function hookWorkerFetch() {
-        console.log('Twitch adblocker is enabled');
+        console.log('Akashy est entrain de bloqué les publicités');
         var realFetch = fetch;
         fetch = async function(url, options) {
             if (typeof url === 'string') {
@@ -312,6 +314,7 @@ twitch-videoad.js text/javascript
                                     StreamInfos[channelName] = streamInfo = {};
                                 }
                                 streamInfo.ChannelName = channelName;
+                                streamInfo.RequestedAds = new Set();
                                 streamInfo.Urls = [];// xxx.m3u8 -> { Resolution: "284x160", FrameRate: 30.0 }
                                 streamInfo.EncodingsM3U8Cache = [];
                                 streamInfo.EncodingsM3U8 = encodingsM3u8;
@@ -472,6 +475,21 @@ twitch-videoad.js text/javascript
             var isMidroll = textStr.includes('"MIDROLL"') || textStr.includes('"midroll"');
             //Reduces ad frequency. TODO: Reduce the number of requests. This is really spamming Twitch with requests.
             if (!isMidroll) {
+                if (playerType === PlayerType2) {
+                    var lines = textStr.replace('\r', '').split('\n');
+                    for (var i = 0; i < lines.length; i++) {
+                        var line = lines[i];
+                        if (line.startsWith('#EXTINF') && lines.length > i + 1) {
+                            if (!line.includes(',live') && !streamInfo.RequestedAds.has(lines[i + 1])) {
+                                // Only request one .ts file per .m3u8 request to avoid making too many requests
+                                //console.log('Fetch ad .ts file');
+                                streamInfo.RequestedAds.add(lines[i + 1]);
+                                fetch(lines[i + 1]).then((response)=>{response.blob()});
+                                break;
+                            }
+                        }
+                    }
+                }
                 try {
                     //tryNotifyTwitch(textStr);
                 } catch (err) {}
@@ -548,7 +566,7 @@ twitch-videoad.js text/javascript
             }
         } else {
             if (WasShowingAd) {
-                console.log('EZ Clown Akashy');
+                console.log('Akashy est entrain de bloquer les publicités');
                 WasShowingAd = false;
                 //Here we put player back to original quality and remove the blocking message.
                 postMessage({
@@ -659,7 +677,7 @@ twitch-videoad.js text/javascript
     }
     function gqlRequest(body, realFetch) {
         if (ClientIntegrityHeader == null) {
-            console.warn('ClientIntegrityHeader is null');
+            //console.warn('ClientIntegrityHeader is null');
             //throw 'ClientIntegrityHeader is null';
         }
         var fetchFunc = realFetch ? realFetch : fetch;
@@ -705,10 +723,24 @@ twitch-videoad.js text/javascript
                 }
                 return null;
             }
-            var reactRootNode = null;
-            var rootNode = document.querySelector('#root');
-            if (rootNode && rootNode._reactRootContainer && rootNode._reactRootContainer._internalRoot && rootNode._reactRootContainer._internalRoot.current) {
-                reactRootNode = rootNode._reactRootContainer._internalRoot.current;
+            function findReactRootNode() {
+                var reactRootNode = null;
+                var rootNode = document.querySelector('#root');
+                if (rootNode && rootNode._reactRootContainer && rootNode._reactRootContainer._internalRoot && rootNode._reactRootContainer._internalRoot.current) {
+                    reactRootNode = rootNode._reactRootContainer._internalRoot.current;
+                }
+                if (reactRootNode == null) {
+                    var containerName = Object.keys(rootNode).find(x => x.startsWith('__reactContainer'));
+                    if (containerName != null) {
+                        reactRootNode = rootNode[containerName];
+                    }
+                }
+                return reactRootNode;
+            }
+            var reactRootNode = findReactRootNode();
+            if (!reactRootNode) {
+                console.log('Could not find react root');
+                return;
             }
             videoPlayer = findReactNode(reactRootNode, node => node.setPlayerActive && node.props && node.props.mediaPlayerInstance);
             videoPlayer = videoPlayer && videoPlayer.props && videoPlayer.props.mediaPlayerInstance ? videoPlayer.props.mediaPlayerInstance : null;
@@ -857,16 +889,20 @@ twitch-videoad.js text/javascript
                         }
                         //Client integrity header
                         ClientIntegrityHeader = init.headers['Client-Integrity'];
-                        twitchMainWorker.postMessage({
-                            key: 'UpdateClientIntegrityHeader',
-                            value: init.headers['Client-Integrity']
-                        });
+                        if (ClientIntegrityHeader && twitchMainWorker) {
+                            twitchMainWorker.postMessage({
+                                key: 'UpdateClientIntegrityHeader',
+                                value: init.headers['Client-Integrity']
+                            });
+                        }
                         //Authorization header
                         AuthorizationHeader = init.headers['Authorization'];
-                        twitchMainWorker.postMessage({
-                            key: 'UpdateAuthorizationHeader',
-                            value: init.headers['Authorization']
-                        });
+                        if (AuthorizationHeader && twitchMainWorker) {
+                            twitchMainWorker.postMessage({
+                                key: 'UpdateAuthorizationHeader',
+                                value: init.headers['Authorization']
+                            });
+                        }
                     }
                     //To prevent pause/resume loop for mid-rolls.
                     if (url.includes('gql') && init && typeof init.body === 'string' && init.body.includes('PlaybackAccessToken') && init.body.includes('picture-by-picture')) {
