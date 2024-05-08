@@ -516,7 +516,7 @@ twitch-videoad.js text/javascript
             }
         } else {
             if (WasShowingAd) {
-                console.log('Finished blocking ads');
+                console.log('Akashy est entrain de bloquer les publicités');
                 WasShowingAd = false;
                 //Here we put player back to original quality and remove the blocking message.
                 postMessage({
